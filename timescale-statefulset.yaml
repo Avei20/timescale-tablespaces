@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb
+spec:
+  serviceName: timescaledb
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timescaledb
+  template:
+    metadata:
+      labels:
+        app: timescaledb
+    spec:
+      containers:
+        - name: timescaledb
+          image: timescale/timescaledb:2.13.0-pg14
+          # Let container run with default user (postgres)
+          env:
+            - name: POSTGRES_DB
+              value: testdb
+            - name: POSTGRES_PASSWORD
+              value: password
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: fastpace
+              mountPath: /mnt/fastpace
+            - name: slowpace
+              mountPath: /mnt/slowpace
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - postgres
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+      securityContext:
+        fsGroup: 999
+      initContainers:
+        - name: init-permissions
+          image: busybox
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              echo "Setting up directory permissions" &&
+              mkdir -p /mnt/fastpace /mnt/slowpace &&
+              chmod -R 700 /mnt/fastpace /mnt/slowpace &&
+              chown -R 999:999 /mnt/fastpace /mnt/slowpace &&
+              # Also set permissions for data directory
+              mkdir -p /var/lib/postgresql/data &&
+              chmod -R 700 /var/lib/postgresql/data &&
+              chown -R 999:999 /var/lib/postgresql/data &&
+              echo "Directory permissions set successfully"
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: fastpace
+              mountPath: /mnt/fastpace
+            - name: slowpace
+              mountPath: /mnt/slowpace
+      volumes:
+        - name: init
+          configMap:
+            name: timescaledb-init
+            defaultMode: 0755
+  volumeClaimTemplates:
+    - metadata:
+        name: pgdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: standard
+    - metadata:
+        name: fastpace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: standard
+    - metadata:
+        name: slowpace
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: standard

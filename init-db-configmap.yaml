@@ -1,0 +1,175 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-init-script
+data:
+  init-db.sh: |
+    #!/bin/bash
+    set -e
+
+    echo "[$(date)] Starting simplified database initialization"
+
+    # Function to execute SQL with error handling
+    execute_sql() {
+      local db=$1
+      local sql=$2
+      echo "[$(date)] Executing SQL on $db: $sql"
+      PGPASSWORD=${POSTGRES_PASSWORD} psql -v ON_ERROR_STOP=1 -U postgres -h timescaledb -d "$db" -c "$sql" || {
+        echo "[$(date)] ERROR: SQL execution failed"
+        return 1
+      }
+      echo "[$(date)] SQL completed successfully"
+    }
+
+    # Wait for database to be fully ready
+    echo "[$(date)] Ensuring database is ready..."
+    for i in {1..30}; do
+      if PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -c "SELECT 1" >/dev/null 2>&1; then
+        echo "[$(date)] Database connection successful"
+        break
+      fi
+      echo "[$(date)] Waiting for database to be ready... ($i/30)"
+      sleep 2
+      if [ $i -eq 30 ]; then
+        echo "[$(date)] ERROR: Database not ready after 60 seconds"
+        exit 1
+      fi
+    done
+
+    # Check if TimescaleDB extension is available
+    if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d postgres -c "SELECT 1 FROM pg_available_extensions WHERE name = 'timescaledb';" | grep -q 1; then
+      echo "[$(date)] ERROR: TimescaleDB extension not available"
+      exit 1
+    fi
+
+    # Ensure testdb exists
+    if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -lqt | cut -d \| -f 1 | grep -qw testdb; then
+      echo "[$(date)] Creating testdb database"
+      PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -c "CREATE DATABASE testdb;"
+    else
+      echo "[$(date)] Database testdb already exists"
+    fi
+
+    # Create tablespaces
+    echo "[$(date)] Setting up tablespaces"
+
+    # Check directory permissions first
+    echo "[$(date)] Checking directory permissions"
+    PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d postgres -c "
+      CREATE OR REPLACE FUNCTION pg_temp.check_dir_permissions(path TEXT) RETURNS TEXT AS \$\$
+      DECLARE
+        result TEXT;
+      BEGIN
+        CREATE TEMP TABLE dir_check(output TEXT);
+        EXECUTE 'COPY dir_check FROM PROGRAM ''ls -ld ' || path || ''' ';
+        SELECT output INTO result FROM dir_check LIMIT 1;
+        DROP TABLE dir_check;
+        RETURN result;
+      END;
+      \$\$ LANGUAGE plpgsql;"
+
+    # Check fastpace directory
+    echo "[$(date)] Checking /mnt/fastpace permissions:"
+    FASTPACE_PERMS=$(PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d postgres -t -c "SELECT pg_temp.check_dir_permissions('/mnt/fastpace')")
+    echo "[$(date)] Fastpace directory: $FASTPACE_PERMS"
+
+    # Check slowpace directory
+    echo "[$(date)] Checking /mnt/slowpace permissions:"
+    SLOWPACE_PERMS=$(PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d postgres -t -c "SELECT pg_temp.check_dir_permissions('/mnt/slowpace')")
+    echo "[$(date)] Slowpace directory: $SLOWPACE_PERMS"
+
+    # Check if fastspace exists
+    if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d testdb -c "SELECT 1 FROM pg_tablespace WHERE spcname = 'fastspace'" | grep -q 1; then
+      echo "[$(date)] Creating fastspace tablespace"
+      execute_sql "testdb" "CREATE TABLESPACE fastspace LOCATION '/mnt/fastpace';"
+    else
+      echo "[$(date)] fastspace tablespace already exists"
+    fi
+
+    # Check if slowspace exists
+    if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d testdb -c "SELECT 1 FROM pg_tablespace WHERE spcname = 'slowspace'" | grep -q 1; then
+      echo "[$(date)] Creating slowspace tablespace"
+      execute_sql "testdb" "CREATE TABLESPACE slowspace LOCATION '/mnt/slowpace';"
+    else
+      echo "[$(date)] slowspace tablespace already exists"
+    fi
+
+    # Create extension and table
+    execute_sql "testdb" "CREATE EXTENSION IF NOT EXISTS timescaledb;"
+    execute_sql "testdb" "DROP TABLE IF EXISTS network_sensor CASCADE;"
+    execute_sql "testdb" "
+    CREATE TABLE network_sensor (
+      ts TIMESTAMPTZ NOT NULL,
+      sensor_id INT NOT NULL,
+      value DOUBLE PRECISION
+    );"
+
+    # Configure hypertable
+    execute_sql "testdb" "SELECT create_hypertable('network_sensor', 'ts', chunk_time_interval => INTERVAL '1 day');"
+    execute_sql "testdb" "SELECT attach_tablespace('fastspace', 'network_sensor');"
+    execute_sql "testdb" "SELECT attach_tablespace('slowspace', 'network_sensor');"
+
+    # Insert sample data
+    echo "[$(date)] Inserting sample data"
+    execute_sql "testdb" "
+    INSERT INTO network_sensor (ts, sensor_id, value)
+    SELECT
+      NOW() - INTERVAL '1 day' * g,
+      (random()*10)::int,
+      random()*100
+    FROM generate_series(0, 102) g;"
+
+    # Create the maintenance procedure
+    execute_sql "testdb" "
+    CREATE OR REPLACE PROCEDURE move_old_chunks_to_cold(job_id int, config jsonb)
+    LANGUAGE plpgsql
+    AS \$\$
+    DECLARE
+      ht REGCLASS;
+      lag interval;
+      destination_tablespace name;
+      chunk REGCLASS;
+    BEGIN
+      RAISE NOTICE 'Starting move_old_chunks_to_cold procedure execution';
+      SELECT jsonb_object_field_text(config, 'hypertable')::regclass INTO STRICT ht;
+      SELECT jsonb_object_field_text(config, 'lag')::interval INTO STRICT lag;
+      SELECT jsonb_object_field_text(config, 'destination_tablespace') INTO STRICT destination_tablespace;
+
+      IF ht IS NULL OR lag IS NULL OR destination_tablespace IS NULL THEN
+        RAISE EXCEPTION 'Config must have hypertable, lag, and destination_tablespace';
+      END IF;
+
+      FOR chunk IN
+        SELECT show_chunks(ht, older_than => lag)
+      LOOP
+        RAISE NOTICE 'Moving chunk: %', chunk::text;
+        PERFORM move_chunk(
+          chunk => chunk,
+          destination_tablespace => destination_tablespace,
+          index_destination_tablespace => destination_tablespace
+        );
+      END LOOP;
+    END
+    \$\$;"
+
+    # Add job
+    echo "[$(date)] Setting up maintenance job"
+    # First check if the job exists
+    if ! PGPASSWORD=${POSTGRES_PASSWORD} psql -U postgres -h timescaledb -d testdb -c "SELECT 1 FROM timescaledb_information.jobs WHERE proc_name = 'move_old_chunks_to_cold'" | grep -q 1; then
+      echo "[$(date)] Creating new job"
+      execute_sql "testdb" "
+      SELECT add_job(
+        'move_old_chunks_to_cold',
+        '1d',
+        config => '{\"hypertable\":\"network_sensor\",\"lag\":\"2 years\",\"destination_tablespace\":\"slowspace\"}'
+      );"
+    else
+      echo "[$(date)] Job already exists"
+    fi
+
+    # Verify everything is set up
+    echo "[$(date)] Verification:"
+    execute_sql "testdb" "SELECT count(*) FROM network_sensor;"
+    execute_sql "testdb" "SELECT tablespace FROM pg_tables WHERE tablename = 'network_sensor';"
+
+    echo "[$(date)] Database initialization complete"

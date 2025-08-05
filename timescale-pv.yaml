@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fastpace-pv
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /tmp/pg_fastpace
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: slowpace-pv
+spec:
+  capacity:
+    storage: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /tmp/pg_slowpace
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fastpace-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  volumeName: fastpace-pv
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slowpace-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  volumeName: slowpace-pv

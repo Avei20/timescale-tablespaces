@@ -1,0 +1,18 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.13.0-pg12
+    container_name: tsdb
+    environment:
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: testdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - fastspace:/mnt/fastspace
+      - slowspace:/mnt/slowspace
+
+volumes:
+  pgdata:
+  fastspace:
+  slowspace:

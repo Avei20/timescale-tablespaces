@@ -1,0 +1,84 @@
+# configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescale-init-scripts
+data:
+  01-create-tablespaces.sql: |
+    -- Create tablespaces for different storage tiers
+    CREATE TABLESPACE hot_data LOCATION '/var/lib/postgresql/hot';
+    CREATE TABLESPACE cold_data LOCATION '/var/lib/postgresql/cold';
+    CREATE TABLESPACE archive_data LOCATION '/var/lib/postgresql/archive';
+
+    -- Grant usage to postgres user
+    GRANT CREATE ON TABLESPACE hot_data TO postgres;
+    GRANT CREATE ON TABLESPACE cold_data TO postgres;
+    GRANT CREATE ON TABLESPACE archive_data TO postgres;
+
+  02-create-database.sql: |
+    -- Create database with TimescaleDB extension
+    CREATE DATABASE sensor_data;
+    \c sensor_data;
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+
+    -- Create schema for sensor data
+    CREATE SCHEMA IF NOT EXISTS sensors;
+
+  03-create-tables.sql: |
+    \c sensor_data;
+
+    -- Create a single sensor data table that will contain all data in the hot tablespace
+    CREATE TABLE sensors.temperature_readings (
+        time TIMESTAMPTZ NOT NULL,
+        sensor_id TEXT NOT NULL,
+        temperature DOUBLE PRECISION,
+        location TEXT,
+        device_type TEXT
+    ) TABLESPACE hot_data;
+
+    -- Convert to hypertable
+    SELECT create_hypertable('sensors.temperature_readings', 'time', chunk_time_interval => INTERVAL '1 day');
+
+    -- Create an index on the single table in the hot tablespace
+    CREATE INDEX idx_temp_sensor_time ON sensors.temperature_readings (sensor_id, time DESC) TABLESPACE hot_data;
+
+    -- Attach all tablespaces to the hypertable
+    SELECT attach_tablespace('hot_data', 'sensors.temperature_readings');
+    SELECT attach_tablespace('cold_data', 'sensors.temperature_readings');
+    SELECT attach_tablespace('archive_data', 'sensors.temperature_readings');
+
+    -- Create functions to manage chunk tablespaces
+    CREATE OR REPLACE FUNCTION manage_chunk_tablespaces()
+    RETURNS void AS $$
+    DECLARE
+        chunk_rec RECORD;
+    BEGIN
+        FOR chunk_rec IN
+            SELECT
+                chunk_schema,
+                chunk_name,
+                range_start,
+                range_end
+            FROM
+                timescaledb_information.chunks
+            WHERE
+                hypertable_schema = 'sensors' AND
+                hypertable_name = 'temperature_readings'
+        LOOP
+            -- Move older chunks to appropriate tablespaces
+            IF chunk_rec.range_start < NOW() - INTERVAL '30 days' THEN
+                EXECUTE format('ALTER TABLE %I.%I SET TABLESPACE archive_data',
+                               chunk_rec.chunk_schema, chunk_rec.chunk_name);
+            ELSIF chunk_rec.range_start < NOW() - INTERVAL '7 days' THEN
+                EXECUTE format('ALTER TABLE %I.%I SET TABLESPACE cold_data',
+                               chunk_rec.chunk_schema, chunk_rec.chunk_name);
+            ELSE
+                EXECUTE format('ALTER TABLE %I.%I SET TABLESPACE hot_data',
+                               chunk_rec.chunk_schema, chunk_rec.chunk_name);
+            END IF;
+        END LOOP;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    -- Run the function immediately
+    SELECT manage_chunk_tablespaces();

@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-init
+data:
+  01_init.sql: |
+    -- Enable verbose error reporting
+    \set ON_ERROR_STOP on
+    \set VERBOSITY verbose
+
+    BEGIN;
+
+    -- Load TimescaleDB extension first
+    CREATE EXTENSION IF NOT EXISTS timescaledb;
+    RAISE NOTICE 'TimescaleDB extension loaded successfully';
+
+    -- Create tablespaces with corrected paths
+    CREATE TABLESPACE fastspace LOCATION '/mnt/fastpace';
+    RAISE NOTICE 'Created fastspace tablespace at /mnt/fastpace';
+
+    CREATE TABLESPACE slowspace LOCATION '/mnt/slowpace';
+    RAISE NOTICE 'Created slowspace tablespace at /mnt/slowpace';
+
+    CREATE TABLE network_sensor (
+      ts TIMESTAMPTZ NOT NULL,
+      sensor_id INT NOT NULL,
+      value DOUBLE PRECISION
+    );
+    RAISE NOTICE 'Created network_sensor table';
+
+    SELECT create_hypertable('network_sensor', 'ts', chunk_time_interval => INTERVAL '1 day');
+    RAISE NOTICE 'Created hypertable for network_sensor';
+
+    SELECT attach_tablespace('fastspace', 'network_sensor');
+    RAISE NOTICE 'Attached fastspace tablespace to network_sensor';
+
+    SELECT attach_tablespace('slowspace', 'network_sensor');
+    RAISE NOTICE 'Attached slowspace tablespace to network_sensor';
+
+    INSERT INTO network_sensor (ts, sensor_id, value)
+    SELECT
+      NOW() - INTERVAL '1 day' * g,
+      (random()*10)::int,
+      random()*100
+    FROM generate_series(0, 102) g;
+    RAISE NOTICE 'Inserted test data into network_sensor';
+
+    COMMIT;
+
+    -- Job scheduling procedure
+    CREATE OR REPLACE PROCEDURE move_old_chunks_to_cold(job_id int, config jsonb)
+    LANGUAGE plpgsql
+    AS $$
+    DECLARE
+      ht REGCLASS;
+      lag interval;
+      destination_tablespace name;
+      chunk REGCLASS;
+    BEGIN
+      RAISE NOTICE 'Starting move_old_chunks_to_cold procedure execution';
+      SELECT jsonb_object_field_text(config, 'hypertable')::regclass INTO STRICT ht;
+      SELECT jsonb_object_field_text(config, 'lag')::interval INTO STRICT lag;
+      SELECT jsonb_object_field_text(config, 'destination_tablespace') INTO STRICT destination_tablespace;
+
+      IF ht IS NULL OR lag IS NULL OR destination_tablespace IS NULL THEN
+        RAISE EXCEPTION 'Config must have hypertable, lag, and destination_tablespace';
+      END IF;
+
+      FOR chunk IN
+        SELECT show_chunks(ht, older_than => lag)
+      LOOP
+        RAISE NOTICE 'Moving chunk: %', chunk::text;
+        PERFORM move_chunk(
+          chunk => chunk,
+          destination_tablespace => destination_tablespace,
+          index_destination_tablespace => destination_tablespace
+        );
+      END LOOP;
+    END
+    $$;
+
+    -- Verify data exists before scheduling job
+    RAISE NOTICE 'Verifying data exists in network_sensor...';
+    DO $$
+    DECLARE
+      cnt int;
+    BEGIN
+      SELECT count(*) INTO cnt FROM network_sensor;
+      RAISE NOTICE 'Found % rows in network_sensor table', cnt;
+    END $$;
+
+    -- Schedule job to move chunks
+    SELECT add_job(
+      'move_old_chunks_to_cold',
+      '1d',
+      config => '{"hypertable":"network_sensor","lag":"2 years","destination_tablespace":"slowspace"}'
+    );
+    RAISE NOTICE 'Scheduled job to move old chunks to cold storage';
+
+    -- Final verification of successful setup
+    DO $$
+    BEGIN
+      RAISE NOTICE 'Database initialization complete. TimescaleDB with tablespaces setup successfully.';
+    END $$;

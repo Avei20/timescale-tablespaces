@@ -1,0 +1,50 @@
+# data-lifecycle-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-lifecycle-scripts
+data:
+  chunk-management.sql: |
+    -- Use our custom function to manage chunk tablespaces
+    SELECT manage_chunk_tablespaces();
+
+    -- Report current tablespace distribution
+    SELECT
+        tablespace_name,
+        count(*) as chunk_count
+    FROM
+        timescaledb_information.chunks
+    WHERE
+        hypertable_schema = 'sensors' AND
+        hypertable_name = 'temperature_readings'
+    GROUP BY
+        tablespace_name;
+
+  compress-old-data.sql: |
+    -- Enable compression on the hypertable if not already enabled
+    DO $$
+    BEGIN
+        -- Check if compression is already enabled
+        IF NOT EXISTS (
+            SELECT 1
+            FROM timescaledb_information.compression_settings
+            WHERE hypertable_schema = 'sensors' AND hypertable_name = 'temperature_readings'
+        ) THEN
+            -- If not, alter the table to enable compression
+            ALTER TABLE sensors.temperature_readings SET (
+                timescaledb.compress,
+                timescaledb.compress_segmentby = 'sensor_id'
+            );
+
+            -- Add compression policy
+            SELECT add_compression_policy('sensors.temperature_readings', INTERVAL '7 days');
+        END IF;
+    END $$;
+
+    -- Manually compress chunks that are older than 7 days but not yet compressed
+    SELECT compress_chunk(chunk)
+    FROM timescaledb_information.chunks
+    WHERE hypertable_schema = 'sensors'
+    AND hypertable_name = 'temperature_readings'
+    AND range_start < now() - INTERVAL '7 days'
+    AND NOT is_compressed;

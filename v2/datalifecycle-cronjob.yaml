@@ -1,0 +1,48 @@
+# data-lifecycle-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: data-lifecycle-job
+spec:
+  schedule: "0 2 * * *" # Run daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: data-mover
+              image: postgres:12
+              env:
+                - name: PGHOST
+                  value: "timescaledb-service"
+                - name: PGPORT
+                  value: "5432"
+                - name: PGUSER
+                  value: "postgres"
+                - name: PGPASSWORD
+                  value: "password"
+                - name: PGDATABASE
+                  value: "sensor_data"
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  echo "Starting data lifecycle management..."
+
+                  # Apply chunk tablespace management
+                  psql -f /scripts/chunk-management.sql
+                  echo "Moved chunks between tablespaces based on age"
+
+                  # Apply compression
+                  psql -f /scripts/compress-old-data.sql
+                  echo "Applied compression policies"
+
+                  echo "Data lifecycle management completed"
+              volumeMounts:
+                - name: lifecycle-scripts
+                  mountPath: /scripts
+          volumes:
+            - name: lifecycle-scripts
+              configMap:
+                name: data-lifecycle-scripts
+          restartPolicy: OnFailure

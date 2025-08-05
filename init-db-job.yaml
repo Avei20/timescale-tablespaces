@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: timescaledb-init-job
+spec:
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init-db
+          image: postgres:14-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Running database initialization script..."
+              sh /scripts/init-db.sh
+          env:
+            - name: POSTGRES_PASSWORD
+              value: "password"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: init-script
+              mountPath: /scripts
+      volumes:
+        - name: init-script
+          configMap:
+            name: timescaledb-init-script
+            defaultMode: 0755

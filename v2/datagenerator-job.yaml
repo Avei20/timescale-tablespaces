@@ -1,0 +1,49 @@
+# data-generator.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-test-data
+spec:
+  template:
+    spec:
+      containers:
+        - name: data-generator
+          image: postgres:12
+          env:
+            - name: PGHOST
+              value: "timescaledb-service"
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              value: "postgres"
+            - name: PGPASSWORD
+              value: "password"
+            - name: PGDATABASE
+              value: "sensor_data"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Generating test data..."
+
+              # Generate sample data for the last 45 days
+              psql -c "
+              INSERT INTO sensors.temperature_readings (time, sensor_id, temperature, location, device_type)
+              SELECT
+                  NOW() - (random() * INTERVAL '45 days'),
+                  'sensor_' || (random() * 100)::int,
+                  20 + (random() * 15),
+                  CASE (random() * 3)::int
+                      WHEN 0 THEN 'warehouse_a'
+                      WHEN 1 THEN 'warehouse_b'
+                      ELSE 'warehouse_c'
+                  END,
+                  CASE (random() * 2)::int
+                      WHEN 0 THEN 'temperature_sensor'
+                      ELSE 'humidity_sensor'
+                  END
+              FROM generate_series(1, 100000);
+              "
+
+              echo "Test data generated successfully"
+      restartPolicy: Never
