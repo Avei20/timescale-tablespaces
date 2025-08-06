@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.app.name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ .Values.app.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app.name }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ index .Values.nodeSelector "kubernetes.io/hostname" }}
+      securityContext:
+        runAsUser: 0
+        fsGroup: 0
+      containers:
+      - name: {{ .Values.app.name }}
+        image: {{ .Values.app.image }}
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_PASSWORD
+          value: {{ .Values.database.password }}
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+        - name: hot-storage
+          mountPath: /var/lib/postgresql/hot
+        - name: cold-storage
+          mountPath: /var/lib/postgresql/cold
+        - name: archive-storage
+          mountPath: /var/lib/postgresql/archive
+        lifecycle:
+          postStart:
+            exec:
+              command:
+                - "/bin/bash"
+                - "-c"
+                - |
+                  chown -R postgres:postgres /var/lib/postgresql/hot
+                  chown -R postgres:postgres /var/lib/postgresql/cold
+                  chown -R postgres:postgres /var/lib/postgresql/archive
+                  chmod 700 /var/lib/postgresql/hot
+                  chmod 700 /var/lib/postgresql/cold
+                  chmod 700 /var/lib/postgresql/archive
+      volumes:
+      - name: postgres-data
+        emptyDir: {}
+      - name: hot-storage
+        persistentVolumeClaim:
+          claimName: {{ .Values.app.name }}-hot-pvc
+      - name: cold-storage
+        persistentVolumeClaim:
+          claimName: {{ .Values.app.name }}-cold-pvc
+      - name: archive-storage
+        persistentVolumeClaim:
+          claimName: {{ .Values.app.name }}-archive-pvc

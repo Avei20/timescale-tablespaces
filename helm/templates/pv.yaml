@@ -1,0 +1,82 @@
+# Storage Class
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storage.storageClass }}
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+---
+# Hot Data PV
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.app.name }}-hot-pv
+  labels:
+    type: hot
+spec:
+  capacity:
+    storage: {{ .Values.storage.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ .Values.storage.storageClass }}
+  local:
+    path: /mnt/hot-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ index .Values.nodeSelector "kubernetes.io/hostname" }}
+---
+# Cold Data PV
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.app.name }}-cold-pv
+  labels:
+    type: cold
+spec:
+  capacity:
+    storage: {{ .Values.storage.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ .Values.storage.storageClass }}
+  local:
+    path: /mnt/cold-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ index .Values.nodeSelector "kubernetes.io/hostname" }}
+---
+# Archive Data PV
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ .Values.app.name }}-archive-pv
+  labels:
+    type: archive
+spec:
+  capacity:
+    storage: {{ .Values.storage.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: {{ .Values.storage.storageClass }}
+  local:
+    path: /mnt/archive-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - {{ index .Values.nodeSelector "kubernetes.io/hostname" }}

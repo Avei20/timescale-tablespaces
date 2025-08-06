@@ -1,0 +1,47 @@
+# Hot Data PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.app.name }}-hot-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}
+  selector:
+    matchLabels:
+      type: hot
+---
+# Cold Data PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.app.name }}-cold-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}
+  selector:
+    matchLabels:
+      type: cold
+---
+# Archive Data PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.app.name }}-archive-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.storage.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size }}
+  selector:
+    matchLabels:
+      type: archive

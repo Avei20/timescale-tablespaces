@@ -1,0 +1,15 @@
+# Simple configuration - minimal templating
+app:
+  name: timescaledb
+  image: timescale/timescaledb:2.11.0-pg12
+
+storage:
+  size: 512Mi
+  storageClass: local-storage-demo-v3
+
+database:
+  password: password
+
+# Node selector for Kind
+nodeSelector:
+  kubernetes.io/hostname: timescale-cluster-helm-v2-control-plane

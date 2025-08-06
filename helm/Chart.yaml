@@ -1,0 +1,18 @@
+apiVersion: v2
+name: timescaledb-tablespace
+description: PostgreSQL 12 with TimescaleDB and Tablespace implementation for data lifecycle management
+type: application
+version: 0.1.0
+appVersion: "2.11.0-pg12"
+keywords:
+  - postgresql
+  - timescaledb
+  - tablespace
+  - time-series
+  - database
+home: https://www.timescale.com/
+sources:
+  - https://github.com/timescale/timescaledb
+maintainers:
+  - name: TimescaleDB Team
+    email: support@timescale.com
